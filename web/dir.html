@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Index of {{PATH}}</title>
+<style>
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+     margin:0 auto;padding:24px;max-width:1000px}
+h1{font-size:15px;font-weight:600;margin:0 0 14px;word-break:break-all}
+h1 span{opacity:.55;font-weight:400}
+.bar{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+input{flex:1;max-width:320px;padding:6px 10px;border:1px solid #8886;border-radius:6px;
+      background:transparent;color:inherit;font:inherit}
+input:focus{outline:2px solid #4c8dff66;border-color:#4c8dff99}
+#count{opacity:.6;white-space:nowrap}
+.opt{display:flex;align-items:center;gap:6px;opacity:.7;white-space:nowrap;text-decoration:none;color:inherit}
+.opt:hover{opacity:1;text-decoration:none}
+.opt .box{width:14px;height:14px;border:1px solid #8888;border-radius:3px;
+          display:grid;place-items:center;font-size:11px;line-height:1}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #8883;vertical-align:top}
+th{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;opacity:.6}
+td.n{width:99%;word-break:break-all}
+td.s,td.m{opacity:.65;white-space:nowrap;font-variant-numeric:tabular-nums}
+td.p,td.o{opacity:.65;white-space:nowrap;font-variant-numeric:tabular-nums}
+td.p{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+td.d,th.d{width:1%;text-align:right;white-space:nowrap}
+a.dl{opacity:.45;text-decoration:none;font-size:13px;padding:0 4px}
+a.dl:hover{opacity:1;text-decoration:none}
+@media(max-width:700px){td.p,td.o,th.p,th.o{display:none}}
+a{color:#3b82f6;text-decoration:none}
+a:hover{text-decoration:underline}
+#rows tr{cursor:pointer}
+tr:hover td{background:#8881}
+tr.dir a{font-weight:600}
+tr.up a{opacity:.75}
+.empty{padding:22px 10px;opacity:.6}
+footer{margin-top:14px;opacity:.45;font-size:12px}
+</style>
+</head>
+<body>
+<h1><span>Index of</span> {{PATH}}</h1>
+<div class="bar">
+  <input id="q" type="search" placeholder="Filter… (press /)" autocomplete="off" spellcheck="false" autofocus>
+  <a class="opt" href="{{HIDDEN_HREF}}" title="show hidden files"><span class="box">{{HIDDEN_MARK}}</span>hidden</a>
+  <span id="count">{{COUNT}}</span>
+</div>
+<table>
+<thead><tr><th>Name</th><th>Size</th><th class="p">Mode</th><th class="o">Owner</th><th>Modified</th><th class="d"></th></tr></thead>
+<tbody id="rows">
+<!--parent-->
+<tr class="up" data-name=".."><td class="n"><a href="{{PARENT}}">..</a></td><td class="s"></td><td class="p"></td><td class="o"></td><td class="m"></td><td class="d"></td></tr>
+<!--/parent-->
+<!--entry-->
+<tr class="{{CLASS}}" data-name="{{NAME}}"><td class="n"><a href="{{HREF}}">{{NAME}}{{SLASH}}</a></td><td class="s">{{SIZE}}</td><td class="p">{{MODE}}</td><td class="o">{{OWNER}}</td><td class="m">{{MOD}}</td><td class="d"><!--download--><a class="dl" href="{{DL}}" title="download">&#8595;</a><!--/download--></td></tr>
+<!--/entry-->
+</tbody>
+</table>
+<p class="empty" id="none" hidden>nothing matches the filter</p>
+<footer>served over ssh</footer>
+<script>
+(function(){
+  var q=document.getElementById('q'),count=document.getElementById('count'),
+      none=document.getElementById('none'),
+      rows=Array.prototype.slice.call(document.querySelectorAll('#rows tr')),
+      up=document.querySelector('#rows tr.up'),
+      total=rows.length-(up?1:0);
+  function apply(){
+    var v=q.value.trim().toLowerCase(),n=0,i,r,hit;
+    if(up)up.hidden=!!v;
+    for(i=0;i<rows.length;i++){
+      r=rows[i];
+      if(r===up)continue;
+      hit=!v||r.getAttribute('data-name').toLowerCase().indexOf(v)>=0;
+      r.hidden=!hit;
+      if(hit)n++;
+    }
+    count.textContent=v?(n+' / '+total+' items'):(total+(total===1?' item':' items'));
+    none.hidden=!!v&&n===0;
+  }
+  q.addEventListener('input',apply);
+  document.getElementById('rows').addEventListener('click',function(e){
+    if(e.target.closest('a')||e.button!==0)return;
+    if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+    if(String(window.getSelection()))return;
+    var tr=e.target.closest('tr'),a=tr&&tr.querySelector('a');
+    if(a)location.href=a.href;
+  });
+  document.addEventListener('keydown',function(e){
+    if(e.key==='/'&&document.activeElement!==q){e.preventDefault();q.focus();q.select();}
+    else if(e.key==='Escape'&&document.activeElement===q){q.value='';apply();q.blur();}
+    else if(e.key==='Enter'&&document.activeElement===q){
+      for(var i=0;i<rows.length;i++){
+        if(!rows[i].hidden){rows[i].querySelector('a').click();return;}
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>
