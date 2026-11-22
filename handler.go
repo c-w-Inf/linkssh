@@ -146,32 +146,7 @@ func redirect(w http.ResponseWriter, r *http.Request, to string) {
 
 func (s *fileServer) serveDir(w *respWriter, r *http.Request, rpath, upath string, fi os.FileInfo, times []time.Time) {
 	show := s.showHidden(r)
-	var (
-		list    []os.FileInfo
-		symMods = map[string]time.Time{}
-		symDirs = map[string]bool{}
-	)
-	err := s.with(func(c *sftp.Client) error {
-		var err error
-		if list, err = c.ReadDir(rpath); err != nil {
-			return err
-		}
-
-		for _, fi := range list {
-			if fi.Mode()&os.ModeSymlink == 0 {
-				continue
-			}
-			st, err := c.Stat(path.Join(rpath, fi.Name()))
-			if err != nil {
-				continue
-			}
-			symMods[fi.Name()] = st.ModTime()
-			if st.IsDir() {
-				symDirs[fi.Name()] = true
-			}
-		}
-		return nil
-	})
+	list, symMods, symDirs, err := s.readDir(rpath)
 	if err != nil {
 		s.fail(w, upath, err)
 		return
@@ -179,15 +154,15 @@ func (s *fileServer) serveDir(w *respWriter, r *http.Request, rpath, upath strin
 
 	if !show {
 		visible := list[:0]
-		for _, fi := range list {
-			if !strings.HasPrefix(fi.Name(), ".") {
-				visible = append(visible, fi)
+		for _, e := range list {
+			if !strings.HasPrefix(e.Name(), ".") {
+				visible = append(visible, e)
 			}
 		}
 		list = visible
 	}
 
-	isDir := func(fi os.FileInfo) bool { return fi.IsDir() || symDirs[fi.Name()] }
+	isDir := func(e dirEntry) bool { return e.IsDir() || symDirs[e.Name()] }
 	sort.Slice(list, func(i, j int) bool {
 		if di, dj := isDir(list[i]), isDir(list[j]); di != dj {
 			return di
@@ -212,29 +187,29 @@ func (s *fileServer) serveDir(w *respWriter, r *http.Request, rpath, upath strin
 		data.Parent = s.href(path.Dir(upath), true, parent)
 	}
 	users, groups := s.names()
-	for _, fi := range list {
-		mod := fi.ModTime()
-		if target, ok := symMods[fi.Name()]; ok {
+	for _, e := range list {
+		mod := e.ModTime()
+		if target, ok := symMods[e.Name()]; ok {
 			mod = target
 		}
-		dir := isDir(fi)
+		dir := isDir(e)
 		child := times
 		if dir {
 			child = append(append([]time.Time{}, times...), mod)
 		}
-		e := pageEntry{
-			Name:  fi.Name(),
-			Href:  s.href(path.Join(upath, fi.Name()), dir, child),
+		entry := pageEntry{
+			Name:  e.Name(),
+			Href:  s.href(path.Join(upath, e.Name()), dir, child),
 			IsDir: dir,
-			Mode:  modeString(fi.Mode()),
-			Owner: ownerString(fi, users, groups),
+			Mode:  modeString(e.Mode()),
+			Owner: ownerString(e, users, groups),
 			Mod:   mod.Format("2006-01-02 15:04"),
 		}
-		if !e.IsDir {
-			e.Size = humanSize(fi.Size())
-			e.Download = withQuery(e.Href, "download=1")
+		if !dir {
+			entry.Size = humanSize(e.Size())
+			entry.Download = withQuery(entry.Href, "download=1")
 		}
-		data.Entries = append(data.Entries, e)
+		data.Entries = append(data.Entries, entry)
 	}
 
 	h := w.Header()
@@ -245,6 +220,68 @@ func (s *fileServer) serveDir(w *respWriter, r *http.Request, rpath, upath strin
 		return
 	}
 	s.dir.execute(w, data)
+}
+
+func (s *fileServer) readDir(rpath string) ([]dirEntry, map[string]time.Time, map[string]bool, error) {
+	d, err := s.rm.DirSession()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	handle, err := d.OpenDir(rpath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var list []dirEntry
+	for {
+		batches, eof, err := d.ReadDir(handle, 8)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for _, batch := range batches {
+			list = append(list, batch...)
+		}
+		if eof {
+			break
+		}
+	}
+	d.CloseDir(handle)
+	return s.resolveSymlinks(rpath, list)
+}
+
+func (s *fileServer) resolveSymlinks(rpath string, list []dirEntry) ([]dirEntry, map[string]time.Time, map[string]bool, error) {
+	symMods := map[string]time.Time{}
+	symDirs := map[string]bool{}
+	var (
+		wg  sync.WaitGroup
+		mu  sync.Mutex
+		sem = make(chan struct{}, 32)
+	)
+	err := s.with(func(c *sftp.Client) error {
+		for _, e := range list {
+			if e.mode&os.ModeSymlink == 0 {
+				continue
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(name string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				st, err := c.Stat(path.Join(rpath, name))
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				symMods[name] = st.ModTime()
+				if st.IsDir() {
+					symDirs[name] = true
+				}
+				mu.Unlock()
+			}(e.name)
+		}
+		wg.Wait()
+		return nil
+	})
+	return list, symMods, symDirs, err
 }
 
 func hrefFor(p string) string {
@@ -560,18 +597,14 @@ func modeString(m os.FileMode) string {
 	return string(b)
 }
 
-func ownerString(fi os.FileInfo, users, groups map[int]string) string {
-	st, ok := fi.Sys().(*sftp.FileStat)
-	if !ok {
-		return ""
-	}
-	user := users[int(st.UID)]
+func ownerString(e dirEntry, users, groups map[int]string) string {
+	user := users[int(e.uid)]
 	if user == "" {
-		user = strconv.FormatUint(uint64(st.UID), 10)
+		user = strconv.FormatUint(uint64(e.uid), 10)
 	}
-	group := groups[int(st.GID)]
+	group := groups[int(e.gid)]
 	if group == "" {
-		group = strconv.FormatUint(uint64(st.GID), 10)
+		group = strconv.FormatUint(uint64(e.gid), 10)
 	}
 	return user + ":" + group
 }

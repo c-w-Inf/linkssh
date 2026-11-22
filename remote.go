@@ -23,6 +23,7 @@ type Remote struct {
 	mu      sync.Mutex
 	cli     *ssh.Client
 	sf      *sftp.Client
+	dir     *dirClient
 	absRoot string
 	closed  bool
 }
@@ -54,10 +55,38 @@ func (r *Remote) Close() {
 }
 
 func (r *Remote) closeLocked() {
+	if r.dir != nil {
+		r.dir.Close()
+	}
 	if r.cli != nil {
 		r.cli.Close()
 	}
-	r.cli, r.sf = nil, nil
+	r.cli, r.sf, r.dir = nil, nil, nil
+}
+
+func (r *Remote) DirSession() (*dirClient, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, errRemoteClosed
+	}
+	if r.sf == nil {
+		if err := r.dialLocked(); err != nil {
+			return nil, err
+		}
+	}
+	if r.dir != nil && !r.dir.alive.Load() {
+		r.dir.Close()
+		r.dir = nil
+	}
+	if r.dir == nil {
+		d, err := newDirClient(r.cli)
+		if err != nil {
+			return nil, err
+		}
+		r.dir = d
+	}
+	return r.dir, nil
 }
 
 func (r *Remote) Acquire() (*sftp.Client, func(error), error) {

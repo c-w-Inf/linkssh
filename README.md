@@ -5,10 +5,9 @@ Serve a remote machine's filesystem over HTTP, with SSH/SFTP as the transport.
 `http://localhost:8080/path` makes the server read `/path` on the SSH host: files
 are returned as-is (Range, Last-Modified and HEAD are supported) and directories
 render as a minimal interactive index with filtering and keyboard navigation. Each
-row has a download button that forces `Content-Disposition: attachment` instead of
-rendering the file in the browser. Each
-row shows name, size, mode, owner:group and mtime; owner names are resolved from
-the remote `/etc/passwd` and `/etc/group`, falling back to numeric IDs.
+row shows name, size, mode, owner:group and mtime (owner names are resolved from the
+remote `/etc/passwd` and `/etc/group`, with a numeric fallback) and has a download
+button that forces `Content-Disposition: attachment`.
 
 HTTP paths map 1:1 onto remote paths. The service is read-only and stateless.
 The optional `-s` flag gates everything behind a token derived from the path and
@@ -19,6 +18,7 @@ the modification times of every folder above it.
 ```
 main.go      flags, SSH auth, HTTP server, graceful shutdown
 remote.go    SSH/SFTP connection (keepalive, automatic reconnect)
+sftpread.go  small SFTP client for directory listings (8 READDIRs in flight)
 handler.go   path mapping, file/dir responses, token and password checks
 render.go    the tiny placeholder engine used by the HTML pages
 assets.go    go:embed of web/*.html
@@ -59,6 +59,14 @@ days (the header link carries `?hidden=1` / `?hidden=0`).
 
 The target is always `user@host` (for IPv6, `user@[::1]`); the SSH port comes from
 `-p` only.
+
+## Listing performance
+
+Directories are read with a small SFTP client of its own (`sftpread.go`) that keeps
+8 `READDIR` requests in flight and consumes the 8 responses per round trip, instead
+of pkg/sftp's strictly sequential `ReadDir`. Symlinks are resolved with up to 32
+parallel `Stat` calls. 3000 entries at 160 ms RTT take ~1.5 s per listing; file
+downloads use pipelined 32 KB reads and are not affected.
 
 ## Flags
 
